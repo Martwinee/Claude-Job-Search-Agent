@@ -3,7 +3,7 @@
 /**
  * scan.mjs — Zero-token portal scanner
  *
- * Fetches Greenhouse, Ashby, and Lever APIs directly, applies title
+ * Fetches Greenhouse, Ashby, Lever, and Workday APIs directly, applies title
  * filters from portals.yml, deduplicates against existing history,
  * and appends new offers to pipeline.md + scan-history.tsv.
  *
@@ -69,6 +69,27 @@ function detectApi(company) {
     };
   }
 
+  // Workday: explicit api_type field
+  if (company.api_type === 'workday' && company.api) {
+    const baseMatch = (company.careers_url || '').match(/(https?:\/\/[^/]+\/[^/?#]+)/);
+    return {
+      type: 'workday',
+      url: company.api,
+      careersBase: baseMatch ? baseMatch[1] : company.careers_url,
+    };
+  }
+
+  // Workday: detected from URL pattern
+  const workdayMatch = url.match(/(https?:\/\/(\w+)\.(wd\d+)\.myworkdayjobs\.com)\/([^/?#]+)/);
+  if (workdayMatch) {
+    const [, hostBase, tenant, , board] = workdayMatch;
+    return {
+      type: 'workday',
+      url: `${hostBase}/wday/cxs/${tenant}/${board}/jobs`,
+      careersBase: `${hostBase}/${board}`,
+    };
+  }
+
   return null;
 }
 
@@ -104,6 +125,15 @@ function parseLever(json, companyName) {
   }));
 }
 
+function parseWorkday(jobs, companyName, careersBase) {
+  return jobs.map(j => ({
+    title: j.title || '',
+    url: (careersBase || '') + (j.externalPath || ''),
+    company: companyName,
+    location: j.locationsText || '',
+  }));
+}
+
 const PARSERS = { greenhouse: parseGreenhouse, ashby: parseAshby, lever: parseLever };
 
 // ── Fetch with timeout ──────────────────────────────────────────────
@@ -120,6 +150,34 @@ async function fetchJson(url) {
   }
 }
 
+async function fetchWorkday(url) {
+  const allJobs = [];
+  let offset = 0;
+  const limit = 20;
+  while (true) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    let json;
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ appliedFacets: {}, limit, offset, searchText: '' }),
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      json = await res.json();
+    } finally {
+      clearTimeout(timer);
+    }
+    const batch = json.jobPostings || [];
+    allJobs.push(...batch);
+    if (batch.length < limit) break;
+    offset += limit;
+  }
+  return allJobs;
+}
+
 // ── Title filter ────────────────────────────────────────────────────
 
 function buildTitleFilter(titleFilter) {
@@ -131,6 +189,20 @@ function buildTitleFilter(titleFilter) {
     const hasPositive = positive.length === 0 || positive.some(k => lower.includes(k));
     const hasNegative = negative.some(k => lower.includes(k));
     return hasPositive && !hasNegative;
+  };
+}
+
+// ── Location filter ──────────────────────────────────────────────────
+
+function buildLocationFilter(locationFilter) {
+  if (!locationFilter || locationFilter.mode === 'off') return () => true;
+  const include = (locationFilter.include || []).map(k => k.toLowerCase());
+  const exclude = (locationFilter.exclude || []).map(k => k.toLowerCase());
+  return (location) => {
+    if (!location) return true; // unknown/empty = allow (may be remote)
+    const lower = location.toLowerCase();
+    if (exclude.some(k => lower.includes(k))) return false;
+    return include.some(k => lower.includes(k));
   };
 }
 
@@ -264,6 +336,7 @@ async function main() {
   const config = parseYaml(readFileSync(PORTALS_PATH, 'utf-8'));
   const companies = config.tracked_companies || [];
   const titleFilter = buildTitleFilter(config.title_filter);
+  const locationFilter = buildLocationFilter(config.location_filter);
 
   // 2. Filter to enabled companies with detectable APIs
   const targets = companies
@@ -290,14 +363,20 @@ async function main() {
   const errors = [];
 
   const tasks = targets.map(company => async () => {
-    const { type, url } = company._api;
+    const { type, url, careersBase } = company._api;
     try {
-      const json = await fetchJson(url);
-      const jobs = PARSERS[type](json, company.name);
+      let jobs;
+      if (type === 'workday') {
+        const rawJobs = await fetchWorkday(url);
+        jobs = parseWorkday(rawJobs, company.name, careersBase);
+      } else {
+        const json = await fetchJson(url);
+        jobs = PARSERS[type](json, company.name);
+      }
       totalFound += jobs.length;
 
       for (const job of jobs) {
-        if (!titleFilter(job.title)) {
+        if (!titleFilter(job.title) || !locationFilter(job.location)) {
           totalFiltered++;
           continue;
         }

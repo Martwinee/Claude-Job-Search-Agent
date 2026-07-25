@@ -50,6 +50,7 @@ Usar WebSearch para:
 - Salarios actuales del rol (Glassdoor, Levels.fyi, Blind)
 - Reputación de compensación de la empresa
 - Tendencia de demanda del rol
+- **H1B sponsorship:** Check `data/pipeline.md` first — if the company already has a `Sponsorship:` entry, use that data directly (no new search needed). For new companies, search `{company} H1B site:myvisajobs.com` or `{company} H1B site:h1bdata.info`. Report total LCAs/petitions in last 2 years. Include in report header as `**H1B:** {number} petitions/LCAs (last 2 yrs)`.
 
 Tabla con datos y fuentes citadas. Si no hay datos, decirlo en vez de inventar.
 
@@ -163,6 +164,7 @@ Guardar evaluación completa en `reports/{###}-{company-slug}-{YYYY-MM-DD}.md`.
 **Arquetipo:** {detectado}
 **Score:** {X/5}
 **Legitimacy:** {High Confidence | Proceed with Caution | Suspicious}
+**H1B:** {total LCA/petitions filed in last 2 years} — source: myvisajobs.com or h1bdata.info
 **PDF:** {ruta o pendiente}
 
 ---
